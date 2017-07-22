@@ -1,4 +1,4 @@
-# ComplCoq   Knuth-Bendix Completion on Coq Hint Rewrite DBs
+# ComplCoq - Knuth-Bendix Completion on Coq Hint Rewrite DBs
 
 # Build
 ```
