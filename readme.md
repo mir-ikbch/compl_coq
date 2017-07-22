@@ -1,31 +1,10 @@
 # Build
 ```
-  $ export COQSOURCEBIN=your_path_to_coq_source/bin/
-  $ export COQSOURCELIB=your_path_to_coq_source/
+  $ export COQBIN=your_path_to_coq_bin
+  $ export COQLIB=your_path_to_coq_lib
   $ coq_makefile -f Make -o Makefile
   $ make
-```
-In ``tcsh``:
-```
-  $ setenv PATH your_path_to_installed_coq:$PATH
-  $ setenv COQSOURCEBIN your_path_to_coq_source/bin/
-  $ setenv COQSOURCELIB your_path_to_coq_source/
-  $ coq_makefile -f Make | make -f -
-```
-# Debug
-```
-  $ $COQSOURCEBIN/coqtop.byte
-  Coq < Add LoadPath "path_to_compl_coq" as Completion.
-  Coq < Add ML Path "path_to_compl_coq/src".
-  Coq < Require Import Completion.Completion.
-  Coq < Drop.
-  # #use "include";;
-```
-Alternatively,
-```
-  $ coqtop.byte -R theories/ Completion -I ./src -require Completion.Completion
-  Coq < Drop.
-  # #use "include";;
+  $ make install
 ```
 
 # Example
