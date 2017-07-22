@@ -1,3 +1,5 @@
+# ComplCoq   Knuth-Bendix Completion on Coq Hint Rewrite DBs
+
 # Build
 ```
   $ export COQBIN=your_path_to_coq_bin
