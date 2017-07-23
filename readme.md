@@ -11,6 +11,8 @@
 
 # Example
 ```
+  Coq < Require Setoid.
+  Coq < Require Completion.Completion.
   Coq < Parameter A : Set.
   Coq < Parameter op : A -> A -> A.
   Coq < Axiom ax : forall a b c, op (op a b) (op b c) = b.
