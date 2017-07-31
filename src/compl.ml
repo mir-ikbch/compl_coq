@@ -70,6 +70,7 @@ let rec size c =
   | App (c', args) -> 1 + Array.fold_left (fun res x -> res + size x) 0 args
   | _ -> 1
 
+(* orders *)
 let rec ord_of_list equiv l x y =
   if equiv x y then Eq else
     match l with
@@ -104,27 +105,33 @@ let rec lex_pathord l c1 c2 = if equal c1 c2 then Eq else
                           then Gt else Nc
                | Lt -> if Array.for_all (fun a -> lex_pathord l a c2 = Lt) args1
                           then Lt else Nc
-               | Eq -> lex (lex_pathord l) (Array.to_list args1) (Array.to_list args2))
+               | Eq -> lex (lex_pathord l) (Array.to_list args1) (Array.to_list args2)
+               | Nc -> Errors.error "unknown signature\n")
   | _, App (c2', args) -> if Array.exists (fun a -> let o = lex_pathord l c1 a in o = Lt || o = Eq) args then Lt else
       (match ord_of_list equal l c1 c2' with
       | Lt -> Lt
       | Gt -> if Array.for_all (fun a -> lex_pathord l c1 a = Gt) args
                 then Gt else Nc
-      | Eq -> Lt)
+      | Eq -> Lt
+      | Nc -> Errors.error "unknown signature\n")
   | App (c1', args), _ -> if Array.exists (fun a -> let o = lex_pathord l a c2 in o = Gt || o = Eq) args then Gt else
       (match ord_of_list equal l c1' c2 with
       | Gt -> Gt
       | Lt -> if Array.for_all (fun a -> lex_pathord l a c2 = Lt) args
                 then Lt else Nc
-      | Eq -> Gt)
+      | Eq -> Gt
+      | Nc -> Errors.error "unknown signature\n")
   | _, _ -> Nc
 
 
+(* conversion from [constr] into [Tacexpr.glob_constr_and_expr] *)
 let extern_constr_to_glob b env evd c =
   let cexpr = Constrextern.extern_constr b env evd c in
   let gexpr = Tacintern.intern_constr {ltacvars=Names.Id.Set.empty; genv=env} cexpr in
   gexpr
 
+(* core unification flags (used for [Unification.w_unify] and its variants) which does not allow
+ * beta/iota/delta/eta conversion *)
 let compl_default_core_unify_flags () = { (Unification.default_core_unify_flags ()) with
   modulo_delta = Names.empty_transparent_state;
   modulo_delta_types = Names.empty_transparent_state;
@@ -140,6 +147,7 @@ let compl_default_unify_flags () =
     subterm_unify_flags = f;
   }
 
+(* same as [compl_default_core_unify_flags] but freezes the evars in [c] *)
 let compl_default_core_unify_flags_with_freeze c () = { (Unification.default_core_unify_flags ()) with
   modulo_delta = Names.empty_transparent_state;
   modulo_delta_types = Names.empty_transparent_state;
@@ -163,9 +171,16 @@ let hyp_to hinfo =
   if hinfo.hyp_l2r then hinfo.hyp_right else hinfo.hyp_left
 
 
-let overlaps env evd prop hinfo1 hinfo2 =
+(* In the whole completion procedure here, we treat variables in the sense of TRS as evars of [constr].
+ * Unification between two terms is done by [Unification.w_unify] (or its variants).
+ * To handle rewrite rules [forall x1 x2 ... xn, equiv l r] with their additional information like
+ * proof terms or which (setoid) relation is used, [Autorewrite.hypinfo] works. *)
+(* [overlaps env evd hinfo1 hinfo2] returns a list of pairs of [ev] and [c];
+ * [c] is a subterm of the left hand side of [hinfo2] which unify to the left hand side of [hinfo1] with [evar_map] [ev].
+ * The pairs whose [c] is a single evar are excluded since they are redundant in the completion procedure. *)
+let overlaps env evd hinfo1 hinfo2 =
   let open Evarutil in
-  let ovlps = try Unification.w_unify_to_subterm_all env evd ~flags:(compl_default_unify_flags ()) (hyp_from hinfo2, hyp_from hinfo1)
+  let ovlps = try Unification.w_unify_to_subterm_all env evd ~flags:(compl_default_unify_flags ()) (hinfo2.hyp_left, hinfo1.hyp_left)
     with PretypeError (_, _, NoOccurrenceFound _) -> [] in
   let ovlps = filter (fun (ev,c) ->
     match kind c with
@@ -175,8 +190,15 @@ let overlaps env evd prop hinfo1 hinfo2 =
   in
   ovlps
 
-let crit_pairs env evd prop hinfo1 hinfo2 rule =
-  let ovlps = overlaps env evd prop hinfo1 hinfo2 in
+(* [crit_pairs env evd hinfo1 hinfo2 rule] returns a list of 7-ples [(x, c, c1, c2, hinfo1, hinfo2, rule)] with
+ * following properties:
+ * - [x] is an evar map obtained by [overlaps],
+ * - [c] is the constr which is obtained by normalizing the left hand side of [hinfo1] with [x],
+ * - The pair of [c1] and [c2] is a critical pair between [hinfo1] and [hinfo2] obtained by [x].
+ * [rule] must be a proof term of [hinfo2.hyp_ty].
+ * This function is used mainly for [critical_pairs]. *)
+let crit_pairs env evd hinfo1 hinfo2 rule =
+  let ovlps = overlaps env evd hinfo1 hinfo2 in
   let c ev = Evarutil.nf_evar ev (hyp_from hinfo1) in
   let c1 ev = Evarutil.nf_evar ev (hyp_to hinfo1) in
   let c2 (ev, t) = Evarutil.nf_evar ev (Termops.replace_term t hinfo2.hyp_right hinfo1.hyp_left) in
@@ -186,6 +208,9 @@ let crit_pairs env evd prop hinfo1 hinfo2 rule =
     if equal c1 c2 then res else (x, c x, c1, c2, hinfo1, hinfo2, rule) :: res) [] ovlps
  
 
+(* [abstract_scheme prod env (locc, a) (c, sigma)] returns [forall x, c[x/a] ] if [prod] is true
+ * and returns [fun x => c[x/a] ] if not. Here, [c[x/a]] means the term which is obtained by
+ * replacing [a] with [x] in [c] at occurrences [locc]. *)
 let abstract_scheme prod env (locc, a) (c, sigma) =
   let ta = Retyping.get_type_of env sigma a in
   let na = Namegen.named_hd env ta Anonymous in
@@ -509,9 +534,9 @@ let critical_pairs env evd rews newrules =
     let g res' c' =
       let h = find_applied_relation false Loc.ghost env evd c true in
       let h' = find_applied_relation false Loc.ghost h.hyp_cl.env h.hyp_cl.evd c' true in
-      let cs = crit_pairs h'.hyp_cl.env h'.hyp_cl.evd true h h' c' in
+      let cs = crit_pairs h'.hyp_cl.env h'.hyp_cl.evd h h' c' in
       let h = find_applied_relation false Loc.ghost h'.hyp_cl.env h'.hyp_cl.evd c true in
-      let cs = List.rev_append cs (crit_pairs h.hyp_cl.env h.hyp_cl.evd true h' h c) in
+      let cs = List.rev_append cs (crit_pairs h.hyp_cl.env h.hyp_cl.evd h' h c) in
       List.rev_append cs res'
     in
     List.rev_append (List.fold_left g [] rs) res
@@ -537,7 +562,7 @@ let remove env evd ord scompl rews rews' =
   in
   aux [] rews
 
-let completion_main ord scompl basename rews newrules comms =
+let completion_core ord scompl basename rews newrules comms =
   let env = Global.env () in
   let evd = Evd.from_env env in
   let rews = remove env evd ord scompl rews (List.rev_append comms newrules) in
@@ -545,15 +570,16 @@ let completion_main ord scompl basename rews newrules comms =
   msg (str "newrules:\n");
   List.iter (fun x -> msg (Ppconstr.pr_constr_expr (Constrextern.extern_constr true env evd x) ++ str "\n")) newrules;
   let cps = critical_pairs env evd (List.rev_append comms rews) newrules in
-  let aux (newrs, rews) (ev, c, c1, c2, hinfo1, hinfo2, rule) =
-    match proofterm_of_cp c c1 c2 hinfo1 hinfo2 rule ord scompl basename (List.rev_append newrs rews) with
-    | Some prfc -> prfc::newrs, rews
-    | None -> newrs, rews
+  let whole_rews = List.rev_append comms (List.rev_append newrules rews) in
+  let aux newrs (ev, c, c1, c2, hinfo1, hinfo2, rule) =
+    match proofterm_of_cp c c1 c2 hinfo1 hinfo2 rule ord scompl basename (List.rev_append newrs whole_rews) with
+    | Some prfc -> prfc::newrs
+    | None -> newrs
   in
-  List.fold_left aux ([], (List.rev_append comms (List.rev_append newrules rews))) cps
+  List.fold_left aux [] cps, whole_rews
 
 let rec completion_aux ord scompl basename rews newrules comms =
-  let newrules, rews = completion_main ord scompl basename rews newrules comms in
+  let newrules, rews = completion_core ord scompl basename rews newrules comms in
   match newrules with
   | [] -> let env = Global.env () in
           let evd = Evd.from_env env in
