@@ -1,0 +1,12 @@
+*.a
+*.aux
+*.bak
+*.cm*
+*.d
+*.glob
+*.o
+*.vo
+*.swp
+*.swo
+Makefile
+Debug.v

@@ -6,7 +6,7 @@ open Autorewrite
 open Proofview.Notations
 open Pp
 open Pretype_errors
-
+ 
 (* find Coq references *)
 let make_dir l = DirPath.make (List.rev_map Id.of_string l)
 
