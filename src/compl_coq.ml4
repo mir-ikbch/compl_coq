@@ -37,3 +37,8 @@ END
 TACTIC EXTEND autorewrite_ac
 | [ "autorewrite_ac" preident(db) "sigs" ne_constr_list(l) ] -> [ Compl.autorewrite_ac db l ]
 END
+
+TACTIC EXTEND ordered_autorewrite
+| ["ordered_rewrite" constr(c) "sigs" ne_constr_list(l) ] -> [ Compl.ordered_rewrite c l ]
+| ["ordered_autorewrite" preident(db) "sigs" ne_constr_list(l) ] -> [ Compl.ordered_autorewrite db l ]
+END

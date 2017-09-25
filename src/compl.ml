@@ -289,41 +289,6 @@ let congruence_using_tac cs =
     congruence_using cs
   end
 
-let ordered_rewrite c ord =
-  let open Evarutil in
-  Proofview.Goal.nf_enter begin fun gl ->
-    let concl = Proofview.Goal.concl gl in
-    let hinfo = Tacmach.New.pf_apply (find_applied_relation false Loc.ghost) gl c true in
-    let w_unify_to_subterm_all = Unification.w_unify_to_subterm_all hinfo.hyp_cl.env ~flags:(compl_unify_flags_with_freeze concl ()) hinfo.hyp_cl.evd in
-    let evs = try
-                w_unify_to_subterm_all (hinfo.hyp_left, concl)
-              with PretypeError (_, _, NoOccurrenceFound _) -> []
-    in
-    let rec tac = function
-      | [] -> Tacticals.New.tclIDTAC
-      | (ev,_)::rest ->
-        match ord (nf_evar ev hinfo.hyp_left) (nf_evar ev hinfo.hyp_right) with
-        | Gt -> Equality.rewriteLR (nf_evar ev hinfo.hyp_prf)
-        | _ -> tac rest
-    in
-    tac evs
-  end
-
-let ordered_rewrites cs weights =
-  Tacticals.New.tclTHENLIST (List.map (fun c -> ordered_rewrite c (lex_pathord weights)) cs)
-
-let ordered_autorewrite_core rules ord =
-  Tacticals.New.tclREPEAT_MAIN (Proofview.tclPROGRESS
-    (List.fold_left (fun tac rule ->
-        Tacticals.New.tclTHEN tac
-          (ordered_rewrite rule ord))
-        (Proofview.tclUNIT()) rules))
-
-let ordered_autorewrite base ord =
-  let rules = List.rev_map (fun x -> x.rew_lemma) (find_rewrites base) in
-  ordered_autorewrite_core rules ord 
-
-
 let rec var_list c = match kind c with
   | Evar _ -> [c]
   | Var _ -> [c]
@@ -340,6 +305,44 @@ let orderable c1 c2 ord = ord c1 c2 = Gt || ord c1 c2 = Lt
 let orderable_rule ?(env=Global.env ()) ?(evd=Evd.from_env env) rew ord =
   let hinfo = find_applied_relation false Loc.ghost env evd rew true in
   orderable hinfo.hyp_left hinfo.hyp_right ord
+
+let ordered_rewrite c weights =
+  let open Evarutil in
+  Proofview.Goal.nf_enter begin fun gl ->
+    let concl = Proofview.Goal.concl gl in
+    let vs = var_list concl in
+    let hinfo = Tacmach.New.pf_apply (find_applied_relation false Loc.ghost) gl c true in
+    let w_unify_to_subterm_all = Unification.w_unify_to_subterm_all hinfo.hyp_cl.env ~flags:(compl_unify_flags_with_freeze concl ()) hinfo.hyp_cl.evd in
+    let evs = try
+                w_unify_to_subterm_all (hinfo.hyp_left, concl)
+              with PretypeError (_, _, NoOccurrenceFound _) -> []
+    in
+    let rec tac = function
+      | [] -> Tacticals.New.tclIDTAC
+      | (ev,_)::rest ->
+        let l = nf_evar ev hinfo.hyp_left in
+        let r = nf_evar ev hinfo.hyp_right in
+        match lex_pathord (List.rev_append weights vs) l r with
+        | Gt -> Equality.rewriteLR (nf_evar ev hinfo.hyp_prf)
+        | _ -> tac rest
+    in
+    tac evs
+  end
+
+let ordered_rewrites cs weights =
+  Tacticals.New.tclTHENLIST (List.map (fun c -> ordered_rewrite c weights) cs)
+
+let ordered_autorewrite_core rules weights =
+  Tacticals.New.tclREPEAT_MAIN (Proofview.tclPROGRESS
+    (List.fold_left (fun tac rule ->
+        Tacticals.New.tclTHEN tac
+          (ordered_rewrite rule weights))
+        (Proofview.tclUNIT()) rules))
+
+let ordered_autorewrite base weights =
+  let rules = List.rev_map (fun x -> x.rew_lemma) (find_rewrites base) in
+  ordered_autorewrite_core rules weights
+
 
 let rewrite_with_sorting occs ord c =
   Proofview.Goal.nf_enter begin fun gl ->
