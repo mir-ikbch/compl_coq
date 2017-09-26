@@ -90,9 +90,7 @@ let rec lex ord cs1 cs2 =
 (* lexicographic recursive path order with weight [l] *)
 let rec lex_pathord l c1 c2 = if equal c1 c2 then Eq else
   match kind c1, kind c2 with
-  | Evar _, Evar _ -> Nc
-  | _, Evar _ -> if SC.mem c2 (subterms c1) then Gt else Nc
-  | Evar _, _ -> if SC.mem c1 (subterms c2) then Lt else Nc
+  | Evar _, Evar _ -> ord_of_list equal l c1 c2
   | Const _, Const _ -> ord_of_list equal l c1 c2
   | Var _, Var _ -> ord_of_list equal l c1 c2
   | App (c1', args1), App (c2', args2) ->
@@ -306,38 +304,37 @@ let orderable_rule ?(env=Global.env ()) ?(evd=Evd.from_env env) rew ord =
   let hinfo = find_applied_relation false Loc.ghost env evd rew true in
   orderable hinfo.hyp_left hinfo.hyp_right ord
 
-let ordered_rewrite c weights =
-  let open Evarutil in
+type compl_mode = Normal | Ordered | Sorting
+
+let ordered_rewrite occs weights c =
   Proofview.Goal.nf_enter begin fun gl ->
     let concl = Proofview.Goal.concl gl in
-    let vs = var_list concl in
     let hinfo = Tacmach.New.pf_apply (find_applied_relation false Loc.ghost) gl c true in
-    let w_unify_to_subterm_all = Unification.w_unify_to_subterm_all hinfo.hyp_cl.env ~flags:(compl_unify_flags_with_freeze concl ()) hinfo.hyp_cl.evd in
-    let evs = try
-                w_unify_to_subterm_all (hinfo.hyp_left, concl)
-              with PretypeError (_, _, NoOccurrenceFound _) -> []
-    in
-    let rec tac = function
-      | [] -> Tacticals.New.tclIDTAC
-      | (ev,_)::rest ->
-        let l = nf_evar ev hinfo.hyp_left in
-        let r = nf_evar ev hinfo.hyp_right in
-        match lex_pathord (List.rev_append weights vs) l r with
-        | Gt -> Equality.rewriteLR (nf_evar ev hinfo.hyp_prf)
-        | _ -> tac rest
-    in
-    tac evs
+    if lex_pathord weights hinfo.hyp_left hinfo.hyp_right = Gt
+      then Equality.rewriteLR c
+      else
+        let unifs = 
+          try
+            Unification.w_unify_to_subterm_all hinfo.hyp_cl.env hinfo.hyp_cl.evd
+              ~flags:(compl_unify_flags_with_freeze concl ()) (hinfo.hyp_left, concl)
+          with PretypeError (_, _, NoOccurrenceFound _) -> []
+        in
+        let rec aux = function
+          | [] -> Tacticals.New.tclFAIL 0 (str "Nothing to rewrite")
+          | (ev,_)::rest -> 
+              if lex_pathord (weights @ (var_list concl)) (Evarutil.nf_evar ev hinfo.hyp_left) (Evarutil.nf_evar ev hinfo.hyp_right) = Gt
+                      then Equality.rewriteLR (Evarutil.nf_evar ev hinfo.hyp_prf)
+                      else aux rest
+        in
+        aux unifs
   end
 
-let ordered_rewrites cs weights =
-  Tacticals.New.tclTHENLIST (List.map (fun c -> ordered_rewrite c weights) cs)
-
-let ordered_autorewrite_core rules weights =
-  Tacticals.New.tclREPEAT_MAIN (Proofview.tclPROGRESS
+let ordered_autorewrite_core weights cs =
+  Tacticals.New.tclREPEAT (
     (List.fold_left (fun tac rule ->
-        Tacticals.New.tclTHEN tac
-          (ordered_rewrite rule weights))
-        (Proofview.tclUNIT()) rules))
+      Tacticals.New.tclTHEN tac
+        (Tacticals.New.tclORELSE (ordered_rewrite AllOccurrences weights rule) Tacticals.New.tclIDTAC))
+      (Proofview.tclUNIT()) cs))
 
 let ordered_autorewrite base weights =
   let rules = List.rev_map (fun x -> x.rew_lemma) (find_rewrites base) in
@@ -394,7 +391,9 @@ let teq env evd c1 c2 =
   try let _ = Unification.w_unify env evd Reduction.CONV ~flags:(compl_unify_flags_with_freeze c1 ()) c1 c2 in true
   with PretypeError (_, _, CannotUnify _) -> false
 
-let rewrite_fun env evd scompl ord c rule =
+
+
+let rewrite_fun env evd mode weights c rule =
   let h = find_applied_relation false Loc.ghost env evd rule true in
   let env = h.hyp_cl.env in
   let evd = h.hyp_cl.evd in
@@ -405,17 +404,22 @@ let rewrite_fun env evd scompl ord c rule =
     | (ev,t)::rest ->
         let c' = 
           Evarutil.nf_evar ev (Termops.replace_term t h.hyp_right c) in
-        if orderable_rule rule ord || not scompl then
-          c' else
-          if varlex c c' = Gt then c' else aux rest
+        match mode with
+        | Normal -> c'
+        | Ordered -> if orderable_rule rule (lex_pathord weights) ||
+                        lex_pathord (weights @ var_list c) (Evarutil.nf_evar ev h.hyp_left) (Evarutil.nf_evar ev h.hyp_right) = Gt
+                        then c' else aux rest
+        | Sorting -> if orderable_rule rule (lex_pathord weights) ||
+                        varlex c c' = Gt 
+                        then c' else aux rest
   in
   aux ovlps
 
-let rec reduce_fun env evd scompl ord c rules =
-  let c' = List.fold_left (fun res rule -> rewrite_fun env evd scompl ord res rule) c rules in
-  if equal c c' then c' else reduce_fun env evd scompl ord c' rules
+let rec reduce_fun env evd mode weights c rules =
+  let c' = List.fold_left (fun res rule -> rewrite_fun env evd mode weights res rule) c rules in
+  if equal c c' then c' else reduce_fun env evd mode weights c' rules
 
-let proofterm_of_cp c c1 c2 hinfo1 hinfo2 rule weights scompl basename rews =
+let proofterm_of_cp c c1 c2 hinfo1 hinfo2 rule weights mode basename rews =
   let env = hinfo2.hyp_cl.env in
   let evd = hinfo2.hyp_cl.evd in
   let equiv = hinfo1.hyp_rel in
@@ -425,7 +429,7 @@ let proofterm_of_cp c c1 c2 hinfo1 hinfo2 rule weights scompl basename rews =
   let evd' = Evd.from_env env' in
   let evd' = Evd.fold_undefined (fun ev evi res -> 
     if Evd.mem res ev then res else Evd.add res ev evi) evd evd' in
-  let eqred = reduce_fun env' evd' scompl ord (mkApp (equiv, [|c1; c2|])) rews in
+  let eqred = reduce_fun env' evd' mode weights (mkApp (equiv, [|c1; c2|])) rews in
   let c1', c2' =
     match kind eqred with
     | App (_, args) -> args.(1), args.(2)
@@ -435,10 +439,10 @@ let proofterm_of_cp c c1 c2 hinfo1 hinfo2 rule weights scompl basename rews =
   if r then None else (
   let euc = Evd.make_evar_universe_context env None in
   let rew_tac ev rews =
-    if scompl then
-      raw_srewrites ord rews
-    else 
-      rewrites rews
+    match mode with
+    | Normal -> rewrites rews
+    | Ordered -> ordered_autorewrite_core weights rews
+    | Sorting -> raw_srewrites ord rews
   in
   let (stmt1, ev1), (stmt2, ev2) = make_eq_statement env evd equiv c c1, make_eq_statement env evd equiv c c2 in
 
@@ -510,7 +514,7 @@ let proofterm_of_cp c c1 c2 hinfo1 hinfo2 rule weights scompl basename rews =
       match ord c1' c2' with
       | Lt -> (p2, c2', euc2), (p1, c1', euc1)
       | Gt -> (p1, c1', euc1), (p2, c2', euc2)
-      | _ -> if scompl then if size c1' >= size c2' then (p1, c1', euc1), (p2, c2', euc2) else (p2,c2',euc2), (p1,c1',euc1) else
+      | _ -> if mode <> Normal then if size c1' >= size c2' then (p1, c1', euc1), (p2, c2', euc2) else (p2,c2',euc2), (p1,c1',euc1) else
           Errors.errorlabstrm "Completion failure"
                   (str "Completion failed: cannot orient " ++ 
                   Ppconstr.pr_constr_expr (Constrextern.extern_constr true env ev c1') ++
@@ -548,13 +552,13 @@ let critical_pairs env evd rews newrules =
   let l = List.fold_left f [] newrules in
   List.sort (fun (_,c1,_,_,_,_,_)(_,c2,_,_,_,_,_) -> size c1 - size c2) l
 
-let remove env evd ord scompl rews rews' =
+let remove env evd weights mode rews rews' =
   let rec aux result  = function
     | [] -> result
     | c'::rews ->
         let h = find_applied_relation false Loc.ghost env evd c' true in
         let rules = List.rev_append result (List.rev_append rews rews') in
-        let h' = reduce_fun h.hyp_cl.env h.hyp_cl.evd scompl ord (mkApp (h.hyp_rel, [|h.hyp_left; h.hyp_right|])) rules in
+        let h' = reduce_fun h.hyp_cl.env h.hyp_cl.evd mode weights (mkApp (h.hyp_rel, [|h.hyp_left; h.hyp_right|])) rules in
         let reducible =
           match kind h' with
           | App (_, args) -> equal args.(1) args.(2)
@@ -566,30 +570,30 @@ let remove env evd ord scompl rews rews' =
   in
   aux [] rews
 
-let completion_core weights scompl basename rews newrules comms =
+let completion_core weights mode basename rews newrules comms =
   let env = Global.env () in
   let evd = Evd.from_env env in
   let ord = lex_pathord weights in
-  let rews = remove env evd ord scompl rews (List.rev_append comms newrules) in
-  let newrules = remove env evd ord scompl newrules (List.rev_append comms rews) in
+  let rews = remove env evd weights mode rews (List.rev_append comms newrules) in
+  let newrules = remove env evd weights mode newrules (List.rev_append comms rews) in
   msg (str "newrules:\n");
   List.iter (fun x -> msg (Ppconstr.pr_constr_expr (Constrextern.extern_constr true env evd x) ++ str "\n")) newrules;
   let cps = critical_pairs env evd (List.rev_append comms rews) newrules in
   let whole_rews = List.rev_append comms (List.rev_append newrules rews) in
   let aux newrs (ev, c, c1, c2, hinfo1, hinfo2, rule) =
-    match proofterm_of_cp c c1 c2 hinfo1 hinfo2 rule weights scompl basename (List.rev_append newrs whole_rews) with
+    match proofterm_of_cp c c1 c2 hinfo1 hinfo2 rule weights mode basename (List.rev_append newrs whole_rews) with
     | Some prfc -> prfc::newrs
     | None -> newrs
   in
   List.fold_left aux [] cps, whole_rews
 
-let rec completion_aux weights scompl basename rews newrules comms =
-  let newrules, rews = completion_core weights scompl basename rews newrules comms in
+let rec completion_aux weights mode basename rews newrules comms =
+  let newrules, rews = completion_core weights mode basename rews newrules comms in
   match newrules with
   | [] -> let env = Global.env () in
           let evd = Evd.from_env env in
           add_rewrite_hint env evd [basename] true None rews Loc.ghost
-  | _ -> completion_aux weights scompl basename rews newrules comms
+  | _ -> completion_aux weights mode basename rews newrules comms
 
 let classes_dirpath =
   Names.DirPath.make (List.map Id.of_string ["Classes";"Coq"])
@@ -598,7 +602,7 @@ let init_setoid () =
   if Libnames.is_dirpath_prefix_of classes_dirpath (Lib.cwd ()) then ()
   else Coqlib.check_required_library ["Coq";"Setoids";"Setoid"]
 
-let completion cs scompl base weights acs =
+let completion cs mode base weights acs =
   init_setoid ();
   let env = Global.env () in
   let evd = Evd.from_env env in
@@ -693,4 +697,4 @@ let completion cs scompl base weights acs =
         | _ -> Errors.error "error")
     | _ -> c) csl
   in
-  completion_aux weights scompl base [] (List.rev_map (fun (_,assoc,_) -> assoc) acs @ rews) comms
+  completion_aux weights mode base [] (List.rev_map (fun (_,assoc,_) -> assoc) acs @ rews) comms
