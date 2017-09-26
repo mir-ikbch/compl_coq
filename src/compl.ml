@@ -415,10 +415,11 @@ let rec reduce_fun env evd scompl ord c rules =
   let c' = List.fold_left (fun res rule -> rewrite_fun env evd scompl ord res rule) c rules in
   if equal c c' then c' else reduce_fun env evd scompl ord c' rules
 
-let proofterm_of_cp c c1 c2 hinfo1 hinfo2 rule ord scompl basename rews =
+let proofterm_of_cp c c1 c2 hinfo1 hinfo2 rule weights scompl basename rews =
   let env = hinfo2.hyp_cl.env in
   let evd = hinfo2.hyp_cl.evd in
   let equiv = hinfo1.hyp_rel in
+  let ord = lex_pathord weights in
 
   let env' = Global.env () in
   let evd' = Evd.from_env env' in
@@ -565,9 +566,10 @@ let remove env evd ord scompl rews rews' =
   in
   aux [] rews
 
-let completion_core ord scompl basename rews newrules comms =
+let completion_core weights scompl basename rews newrules comms =
   let env = Global.env () in
   let evd = Evd.from_env env in
+  let ord = lex_pathord weights in
   let rews = remove env evd ord scompl rews (List.rev_append comms newrules) in
   let newrules = remove env evd ord scompl newrules (List.rev_append comms rews) in
   msg (str "newrules:\n");
@@ -575,19 +577,19 @@ let completion_core ord scompl basename rews newrules comms =
   let cps = critical_pairs env evd (List.rev_append comms rews) newrules in
   let whole_rews = List.rev_append comms (List.rev_append newrules rews) in
   let aux newrs (ev, c, c1, c2, hinfo1, hinfo2, rule) =
-    match proofterm_of_cp c c1 c2 hinfo1 hinfo2 rule ord scompl basename (List.rev_append newrs whole_rews) with
+    match proofterm_of_cp c c1 c2 hinfo1 hinfo2 rule weights scompl basename (List.rev_append newrs whole_rews) with
     | Some prfc -> prfc::newrs
     | None -> newrs
   in
   List.fold_left aux [] cps, whole_rews
 
-let rec completion_aux ord scompl basename rews newrules comms =
-  let newrules, rews = completion_core ord scompl basename rews newrules comms in
+let rec completion_aux weights scompl basename rews newrules comms =
+  let newrules, rews = completion_core weights scompl basename rews newrules comms in
   match newrules with
   | [] -> let env = Global.env () in
           let evd = Evd.from_env env in
           add_rewrite_hint env evd [basename] true None rews Loc.ghost
-  | _ -> completion_aux ord scompl basename rews newrules comms
+  | _ -> completion_aux weights scompl basename rews newrules comms
 
 let classes_dirpath =
   Names.DirPath.make (List.map Id.of_string ["Classes";"Coq"])
@@ -691,4 +693,4 @@ let completion cs scompl base weights acs =
         | _ -> Errors.error "error")
     | _ -> c) csl
   in
-  completion_aux (lex_pathord weights) scompl base [] (List.rev_map (fun (_,assoc,_) -> assoc) acs @ rews) comms
+  completion_aux weights scompl base [] (List.rev_map (fun (_,assoc,_) -> assoc) acs @ rews) comms
