@@ -87,12 +87,16 @@ let rec lex ord cs1 cs2 =
       | Eq -> lex ord cs1' cs2'
       | o -> o
 
+let kind_evar_const_var c =
+  match kind c with
+  | Evar _ -> true
+  | Const _ -> true
+  | Var _ -> true
+  | _ -> false
+
 (* lexicographic recursive path order with weight [l] *)
 let rec lex_pathord l c1 c2 = if equal c1 c2 then Eq else
   match kind c1, kind c2 with
-  | Evar _, Evar _ -> ord_of_list equal l c1 c2
-  | Const _, Const _ -> ord_of_list equal l c1 c2
-  | Var _, Var _ -> ord_of_list equal l c1 c2
   | App (c1', args1), App (c2', args2) ->
       if Array.exists (fun a -> let o = lex_pathord l a c2 in o = Gt || o = Eq) args1
         then Gt
@@ -119,7 +123,9 @@ let rec lex_pathord l c1 c2 = if equal c1 c2 then Eq else
                 then Lt else Nc
       | Eq -> Gt
       | Nc -> Errors.error "unknown signature\n")
-  | _, _ -> Nc
+  | _, _ -> if kind_evar_const_var c1 && kind_evar_const_var c2
+              then ord_of_list equal l c1 c2
+              else Nc
 
 
 (* conversion from [constr] into [Tacexpr.glob_constr_and_expr] *)
@@ -392,7 +398,6 @@ let teq env evd c1 c2 =
   with PretypeError (_, _, CannotUnify _) -> false
 
 
-
 let rewrite_fun env evd mode weights c rule =
   let h = find_applied_relation false Loc.ghost env evd rule true in
   let env = h.hyp_cl.env in
@@ -418,6 +423,7 @@ let rewrite_fun env evd mode weights c rule =
 let rec reduce_fun env evd mode weights c rules =
   let c' = List.fold_left (fun res rule -> rewrite_fun env evd mode weights res rule) c rules in
   if equal c c' then c' else reduce_fun env evd mode weights c' rules
+
 
 let proofterm_of_cp c c1 c2 hinfo1 hinfo2 rule weights mode basename rews =
   let env = hinfo2.hyp_cl.env in
@@ -574,11 +580,14 @@ let completion_core weights mode basename rews newrules comms =
   let env = Global.env () in
   let evd = Evd.from_env env in
   let ord = lex_pathord weights in
+  msg (str (string_of_int (List.length rews) ^ " rews\n"));
   let rews = remove env evd weights mode rews (List.rev_append comms newrules) in
+  msg (str (string_of_int (List.length newrules) ^ " newrules\n"));
   let newrules = remove env evd weights mode newrules (List.rev_append comms rews) in
   msg (str "newrules:\n");
   List.iter (fun x -> msg (Ppconstr.pr_constr_expr (Constrextern.extern_constr true env evd x) ++ str "\n")) newrules;
   let cps = critical_pairs env evd (List.rev_append comms rews) newrules in
+  msg (str (string_of_int (List.length cps) ^ "\n"));
   let whole_rews = List.rev_append comms (List.rev_append newrules rews) in
   let aux newrs (ev, c, c1, c2, hinfo1, hinfo2, rule) =
     match proofterm_of_cp c c1 c2 hinfo1 hinfo2 rule weights mode basename (List.rev_append newrs whole_rews) with
