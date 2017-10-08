@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="generator" content="pandoc">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
-  <title></title>
+  <title>ComplCoq</title>
   <style type="text/css">code{white-space: pre;}</style>
   <!-- Style for Markdown -->
   <style>
@@ -302,7 +302,8 @@ pre {
   <div class="md2html-container">
 <h1 id="complcoq">ComplCoq</h1>
 <h2 id="completion-on-coq-hint-rewrite-dbs">: Completion on Coq Hint Rewrite DBs :</h2>
-<p>ComplCoq is a Coq plugin which automatize algebraic reasoning using completion procedures of term rewriting systems.</p>
+<p>ComplCoq is a Coq plugin that automatize algebraic reasoning using completion procedures of term rewriting systems.</p>
+<p>ComplCoq currently supports Coq v8.5 and v8.6.</p>
 <h2 id="demo">Demo</h2>
 <div class="figure">
 <img src="img/demo.gif" />
@@ -311,8 +312,9 @@ pre {
 <h2 id="install">Install</h2>
 <pre><code>$ git clone https://github.com/mir-ikbch/compl_coq
 $ cd compl_coq
+ for v8.6: $ git checkout 8.6
 $ export COQLIB=path_to_your_coqlib
-$ export COQBIN=path_to_your_cobbin
+$ export COQBIN=path_to_your_coqbin
 $ coq_makefile -f Make -o Makefile
 $ make
 $ make install</code></pre>
