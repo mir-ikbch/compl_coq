@@ -316,6 +316,41 @@ $ export COQBIN=path_to_your_cobbin
 $ coq_makefile -f Make -o Makefile
 $ make
 $ make install</code></pre>
+<h2 id="example">Example</h2>
+<pre><code>Require Setoid.
+Require Import Completion.Completion.
+
+Parameter A : Set.
+Parameter op : A -&gt; A -&gt; A.
+Axiom ax : forall a b c, op (op a b) (op b c) = b.
+
+Complete ax : dbname sigs op.
+Print Rewrite HintDb dbname.
+
+Goal forall a b c, op (op (op a b) (op b c)) (op (op b c) c) = op b c.
+  intros.
+  autorewrite with dbname.
+  reflexivity.
+Qed.
+
+Parameter G : Set.
+Parameter e : G.
+Parameter mul : G -&gt; G -&gt; G.
+Parameter i : G -&gt; G.
+Axiom assoc : forall x y z, mul (mul x y) z = mul x (mul y z).
+Axiom inv : forall x, mul (i x) x = e.
+Axiom iden : forall x, mul e x = x.
+Axiom comm : forall x y, mul x y = mul y x.
+
+Complete inv iden, AC (mul, assoc, comm) : dbname sigs e mul i.
+Print Rewrite HintDb dbname2.
+Ltac autorewrite_gr := autorewrite_ac dbname2 sigs e mul i.
+
+Goal forall a b c, mul (mul b c) (mul a (mul (i c) b)) = mul a (mul b b).
+  intros.
+  autorewrite_gr.
+  reflexivity.
+Qed.</code></pre>
   </div>
 </body>
 </html>
