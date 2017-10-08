@@ -6,7 +6,8 @@ open Autorewrite
 open Proofview.Notations
 open Pp
 open Pretype_errors
- 
+open Cc_plugin
+
 (* find Coq references *)
 let make_dir l = DirPath.make (List.rev_map Id.of_string l)
 
@@ -14,7 +15,7 @@ let try_find_global_reference dir s =
   let sp = Libnames.make_path (make_dir ("Coq"::dir)) (Id.of_string s) in
     try Nametab.global_of_path sp
     with Not_found -> 
-      Errors.anomaly (str "Global reference " ++ str s ++ str " not found in generalized rewriting")
+      CErrors.anomaly (str "Global reference " ++ str s ++ str " not found in generalized rewriting")
 
 let find_reference dir s () =
   try_find_global_reference dir s
@@ -22,7 +23,9 @@ let find_reference dir s () =
 let find_global dir s =
   let gr = lazy (try_find_global_reference dir s) in
     fun (evd,cstrs) -> 
-      let evd, c = Evarutil.new_global evd (Lazy.force gr) in
+      let evd, c =
+        (* Evarutil.new_global *)
+        Evd.fresh_global (Global.env()) evd (Lazy.force gr) in
 	(evd, cstrs), c
 
 let sigP = find_global ["Init"; "Specif"] "sig"
@@ -42,7 +45,7 @@ let add_rewrite_hint env sigma bases ort t lcsr loc =
   let f c = 
     let ctx = Evd.evar_universe_context sigma in
     let ctx =
-      let ctx = Evd.evar_universe_context_set Univ.UContext.empty ctx in
+      let ctx = Evd.evar_universe_context_set (*Univ.UContext.empty*) ctx in
       if poly then ctx
               else (Global.push_context_set false ctx; Univ.ContextSet.empty)
     in
@@ -87,16 +90,14 @@ let rec lex ord cs1 cs2 =
       | Eq -> lex ord cs1' cs2'
       | o -> o
 
-let kind_evar_const_var c =
-  match kind c with
-  | Evar _ -> true
-  | Const _ -> true
-  | Var _ -> true
-  | _ -> false
-
 (* lexicographic recursive path order with weight [l] *)
 let rec lex_pathord l c1 c2 = if equal c1 c2 then Eq else
   match kind c1, kind c2 with
+  | Evar _, Evar _ -> Nc
+  | _, Evar _ -> if SC.mem c2 (subterms c1) then Gt else Nc
+  | Evar _, _ -> if SC.mem c1 (subterms c2) then Lt else Nc
+  | Const _, Const _ -> ord_of_list equal l c1 c2
+  | Var _, Var _ -> ord_of_list equal l c1 c2
   | App (c1', args1), App (c2', args2) ->
       if Array.exists (fun a -> let o = lex_pathord l a c2 in o = Gt || o = Eq) args1
         then Gt
@@ -108,24 +109,22 @@ let rec lex_pathord l c1 c2 = if equal c1 c2 then Eq else
                | Lt -> if Array.for_all (fun a -> lex_pathord l a c2 = Lt) args1
                           then Lt else Nc
                | Eq -> lex (lex_pathord l) (Array.to_list args1) (Array.to_list args2)
-               | Nc -> Errors.error "unknown signature\n")
+               | Nc -> CErrors.error "unknown signature\n")
   | _, App (c2', args) -> if Array.exists (fun a -> let o = lex_pathord l c1 a in o = Lt || o = Eq) args then Lt else
       (match ord_of_list equal l c1 c2' with
       | Lt -> Lt
       | Gt -> if Array.for_all (fun a -> lex_pathord l c1 a = Gt) args
                 then Gt else Nc
       | Eq -> Lt
-      | Nc -> Errors.error "unknown signature\n")
+      | Nc -> CErrors.error "unknown signature\n")
   | App (c1', args), _ -> if Array.exists (fun a -> let o = lex_pathord l a c2 in o = Gt || o = Eq) args then Gt else
       (match ord_of_list equal l c1' c2 with
       | Gt -> Gt
       | Lt -> if Array.for_all (fun a -> lex_pathord l a c2 = Lt) args
                 then Lt else Nc
       | Eq -> Gt
-      | Nc -> Errors.error "unknown signature\n")
-  | _, _ -> if kind_evar_const_var c1 && kind_evar_const_var c2
-              then ord_of_list equal l c1 c2
-              else Nc
+      | Nc -> CErrors.error "unknown signature\n")
+  | _, _ -> Nc
 
 
 (* conversion from [constr] into [Tacexpr.glob_constr_and_expr] *)
@@ -219,7 +218,7 @@ let abstract_scheme prod env (locc, a) (c, sigma) =
   let ta = Retyping.get_type_of env sigma a in
   let na = Namegen.named_hd env ta Anonymous in
   let mk = if prod then mkProd else mkLambda in
-  if Termops.occur_meta ta then Errors.error "Cannot find a type for the generalisation.";
+  if Termops.occur_meta ta then CErrors.error "Cannot find a type for the generalisation.";
   if Termops.occur_meta a then
     mk (na,ta,c), sigma
   else
@@ -264,7 +263,7 @@ let unshelve t =
 
 let pt_of_rew_proof = function
   | RewPrf (_, p) -> p
-  | RewCast _ -> Errors.error "???"
+  | RewCast _ -> CErrors.error "???"
 
 let destLambdas c =
   let rec aux c vars =
@@ -278,8 +277,8 @@ let prod_sig_to_prod env c =
   let c', vars = destLambdas c in
   let p1, p2 =
     match kind c' with
-    | App (cc, args) -> if Term.isConstruct cc then args.(2), args.(3) else Errors.error "Not a constructor"
-    | _ -> Errors.error "Not an application"
+    | App (cc, args) -> if Term.isConstruct cc then args.(2), args.(3) else CErrors.error "Not a constructor"
+    | _ -> CErrors.error "Not an application"
   in
   List.fold_left (fun (c1, c2) (n,t) -> mkLambda (n,t,c1), mkLambda (n,t,c2)) (p1, p2) vars
 
@@ -288,10 +287,45 @@ let congruence_using cs =
   <*> Cctac.congruence_tac 1000 []
 
 let congruence_using_tac cs =
-  Proofview.Goal.nf_enter begin fun gl ->
+  Proofview.Goal.nf_enter { enter = fun gl ->
     let cs = List.rev_map (fun c -> fst (Tacmach.New.pf_apply (fun env evd c -> Constrintern.interp_constr env evd c) gl c)) cs in
     congruence_using cs
-  end
+  }
+
+let ordered_rewrite c ord =
+  let open Evarutil in
+  Proofview.Goal.nf_enter { enter = fun gl ->
+    let concl = Proofview.Goal.concl gl in
+    let hinfo = Tacmach.New.pf_apply (find_applied_relation false Loc.ghost) gl c true in
+    let w_unify_to_subterm_all = Unification.w_unify_to_subterm_all hinfo.hyp_cl.env ~flags:(compl_unify_flags_with_freeze concl ()) hinfo.hyp_cl.evd in
+    let evs = try
+                w_unify_to_subterm_all (hinfo.hyp_left, concl)
+              with PretypeError (_, _, NoOccurrenceFound _) -> []
+    in
+    let rec tac = function
+      | [] -> Tacticals.New.tclIDTAC
+      | (ev,_)::rest ->
+        match ord (nf_evar ev hinfo.hyp_left) (nf_evar ev hinfo.hyp_right) with
+        | Gt -> Equality.rewriteLR (nf_evar ev hinfo.hyp_prf)
+        | _ -> tac rest
+    in
+    tac evs
+  }
+
+let ordered_rewrites cs weights =
+  Tacticals.New.tclTHENLIST (List.map (fun c -> ordered_rewrite c (lex_pathord weights)) cs)
+
+let ordered_autorewrite_core rules ord =
+  Tacticals.New.tclREPEAT_MAIN (Proofview.tclPROGRESS
+    (List.fold_left (fun tac rule ->
+        Tacticals.New.tclTHEN tac
+          (ordered_rewrite rule ord))
+        (Proofview.tclUNIT()) rules))
+
+let ordered_autorewrite base ord =
+  let rules = List.rev_map (fun x -> x.rew_lemma) (find_rewrites base) in
+  ordered_autorewrite_core rules ord 
+
 
 let rec var_list c = match kind c with
   | Evar _ -> [c]
@@ -310,45 +344,8 @@ let orderable_rule ?(env=Global.env ()) ?(evd=Evd.from_env env) rew ord =
   let hinfo = find_applied_relation false Loc.ghost env evd rew true in
   orderable hinfo.hyp_left hinfo.hyp_right ord
 
-type compl_mode = Normal | Ordered | Sorting
-
-let ordered_rewrite occs weights c =
-  Proofview.Goal.nf_enter begin fun gl ->
-    let concl = Proofview.Goal.concl gl in
-    let hinfo = Tacmach.New.pf_apply (find_applied_relation false Loc.ghost) gl c true in
-    if lex_pathord weights hinfo.hyp_left hinfo.hyp_right = Gt
-      then Equality.rewriteLR c
-      else
-        let unifs = 
-          try
-            Unification.w_unify_to_subterm_all hinfo.hyp_cl.env hinfo.hyp_cl.evd
-              ~flags:(compl_unify_flags_with_freeze concl ()) (hinfo.hyp_left, concl)
-          with PretypeError (_, _, NoOccurrenceFound _) -> []
-        in
-        let rec aux = function
-          | [] -> Tacticals.New.tclFAIL 0 (str "Nothing to rewrite")
-          | (ev,_)::rest -> 
-              if lex_pathord (weights @ (var_list concl)) (Evarutil.nf_evar ev hinfo.hyp_left) (Evarutil.nf_evar ev hinfo.hyp_right) = Gt
-                      then Equality.rewriteLR (Evarutil.nf_evar ev hinfo.hyp_prf)
-                      else aux rest
-        in
-        aux unifs
-  end
-
-let ordered_autorewrite_core weights cs =
-  Tacticals.New.tclREPEAT (
-    (List.fold_left (fun tac rule ->
-      Tacticals.New.tclTHEN tac
-        (Tacticals.New.tclORELSE (ordered_rewrite AllOccurrences weights rule) Tacticals.New.tclIDTAC))
-      (Proofview.tclUNIT()) cs))
-
-let ordered_autorewrite base weights =
-  let rules = List.rev_map (fun x -> x.rew_lemma) (find_rewrites base) in
-  ordered_autorewrite_core rules weights
-
-
 let rewrite_with_sorting occs ord c =
-  Proofview.Goal.nf_enter begin fun gl ->
+  Proofview.Goal.nf_enter { enter = fun gl ->
     let concl = Proofview.Goal.concl gl in
     if Tacmach.New.pf_apply (fun env evd -> orderable_rule ~env:env ~evd:evd) gl c ord
       then Equality.rewriteLR c
@@ -367,7 +364,7 @@ let rewrite_with_sorting occs ord c =
                           else aux rest
         in
         aux unifs
-  end
+  }
 
 let srewrite c l =
   rewrite_with_sorting AllOccurrences (lex_pathord l) c
@@ -397,8 +394,7 @@ let teq env evd c1 c2 =
   try let _ = Unification.w_unify env evd Reduction.CONV ~flags:(compl_unify_flags_with_freeze c1 ()) c1 c2 in true
   with PretypeError (_, _, CannotUnify _) -> false
 
-
-let rewrite_fun env evd mode weights c rule =
+let rewrite_fun env evd scompl ord c rule =
   let h = find_applied_relation false Loc.ghost env evd rule true in
   let env = h.hyp_cl.env in
   let evd = h.hyp_cl.evd in
@@ -409,50 +405,49 @@ let rewrite_fun env evd mode weights c rule =
     | (ev,t)::rest ->
         let c' = 
           Evarutil.nf_evar ev (Termops.replace_term t h.hyp_right c) in
-        match mode with
-        | Normal -> c'
-        | Ordered -> if orderable_rule rule (lex_pathord weights) ||
-                        lex_pathord (weights @ var_list c) (Evarutil.nf_evar ev h.hyp_left) (Evarutil.nf_evar ev h.hyp_right) = Gt
-                        then c' else aux rest
-        | Sorting -> if orderable_rule rule (lex_pathord weights) ||
-                        varlex c c' = Gt 
-                        then c' else aux rest
+        if orderable_rule rule ord || not scompl then
+          c' else
+          if varlex c c' = Gt then c' else aux rest
   in
   aux ovlps
 
-let rec reduce_fun env evd mode weights c rules =
-  let c' = List.fold_left (fun res rule -> rewrite_fun env evd mode weights res rule) c rules in
-  if equal c c' then c' else reduce_fun env evd mode weights c' rules
+let rec reduce_fun env evd scompl ord c rules =
+  let c' = List.fold_left (fun res rule -> rewrite_fun env evd scompl ord res rule) c rules in
+  if equal c c' then c' else reduce_fun env evd scompl ord c' rules
 
-
-let proofterm_of_cp c c1 c2 hinfo1 hinfo2 rule weights mode basename rews =
+let proofterm_of_cp c c1 c2 hinfo1 hinfo2 rule ord scompl basename rews =
   let env = hinfo2.hyp_cl.env in
   let evd = hinfo2.hyp_cl.evd in
   let equiv = hinfo1.hyp_rel in
-  let ord = lex_pathord weights in
 
   let env' = Global.env () in
   let evd' = Evd.from_env env' in
   let evd' = Evd.fold_undefined (fun ev evi res -> 
     if Evd.mem res ev then res else Evd.add res ev evi) evd evd' in
-  let eqred = reduce_fun env' evd' mode weights (mkApp (equiv, [|c1; c2|])) rews in
+  let eqred = reduce_fun env' evd' scompl ord (mkApp (equiv, [|c1; c2|])) rews in
   let c1', c2' =
     match kind eqred with
     | App (_, args) -> args.(1), args.(2)
-    | _ -> Errors.error "error"
+    | _ -> CErrors.error "error"
   in
   let r = equal c1' c2' || (List.length (var_list c1') = List.length (var_list c2') && List.for_all2 equal (var_list c1') (var_list c2') && ord c1' c2' <> Gt) in
   if r then None else (
   let euc = Evd.make_evar_universe_context env None in
   let rew_tac ev rews =
-    match mode with
-    | Normal -> rewrites rews
-    | Ordered -> ordered_autorewrite_core weights rews
-    | Sorting -> raw_srewrites ord rews
+    if scompl then
+      raw_srewrites ord rews
+    else 
+      rewrites rews
   in
   let (stmt1, ev1), (stmt2, ev2) = make_eq_statement env evd equiv c c1, make_eq_statement env evd equiv c c2 in
 
-  let tac1 = Auto.auto !Auto.default_search_depth [ev1, hinfo1.hyp_prf] [] in
+  let tac1 =
+    Auto.auto !Auto.default_search_depth
+              [ (* ev1, hinfo1.hyp_prf *)
+                { delayed = fun env sigma ->
+                            Sigma.Unsafe.of_pair (hinfo1.hyp_prf, ev1)
+                } ]
+              [] in
   let tac2 =
     Tactics.intros <*> congruence_using [rule]
   in
@@ -472,8 +467,8 @@ let proofterm_of_cp c c1 c2 hinfo1 hinfo2 rule weights mode basename rews =
   let normalize' ev c c' euc =
     let tac = Tactics.intros <*> Tactics.any_constructor true None <*>
               (rew_tac ev rews <+> Tacticals.New.tclIDTAC) <*>
-              Proofview.V82.tactic (Tactics.unfold_constr (find_reference ["Program"; "Basics"] "flip" ())) <*>
-              Proofview.V82.tactic (Tactics.unfold_constr (find_reference ["Program"; "Basics"] "const" ())) <*>
+                (* Proofview.V82.tactic *) (Tactics.unfold_constr (find_reference ["Program"; "Basics"] "flip" ())) <*>
+                (* Proofview.V82.tactic *) (Tactics.unfold_constr (find_reference ["Program"; "Basics"] "const" ())) <*>
               Tactics.reflexivity
     in
     let (sig_eq,_), evars = make_sig_eq_with env ev equiv c c' in
@@ -489,8 +484,8 @@ let proofterm_of_cp c c1 c2 hinfo1 hinfo2 rule weights mode basename rews =
   let p2',_,euc2 =
     let tac = Tacticals.New.tclTHENS
                 (Tactics.cut stmt')
-                [ Proofview.V82.tactic (Tactics.unfold_constr (find_reference ["Program"; "Basics"] "flip" ())) <*>
-                  Proofview.V82.tactic (Tactics.unfold_constr (find_reference ["Program"; "Basics"] "const" ())) <*>
+                [ (* Proofview.V82.tactic *) (Tactics.unfold_constr (find_reference ["Program"; "Basics"] "flip" ())) <*>
+                  (* Proofview.V82.tactic *) (Tactics.unfold_constr (find_reference ["Program"; "Basics"] "const" ())) <*>
                   Tactics.intros <*>
                   Auto.default_auto
                 ; Tactics.Simple.apply p2']
@@ -520,8 +515,8 @@ let proofterm_of_cp c c1 c2 hinfo1 hinfo2 rule weights mode basename rews =
       match ord c1' c2' with
       | Lt -> (p2, c2', euc2), (p1, c1', euc1)
       | Gt -> (p1, c1', euc1), (p2, c2', euc2)
-      | _ -> if mode <> Normal then if size c1' >= size c2' then (p1, c1', euc1), (p2, c2', euc2) else (p2,c2',euc2), (p1,c1',euc1) else
-          Errors.errorlabstrm "Completion failure"
+      | _ -> if scompl then if size c1' >= size c2' then (p1, c1', euc1), (p2, c2', euc2) else (p2,c2',euc2), (p1,c1',euc1) else
+          CErrors.errorlabstrm "Completion failure"
                   (str "Completion failed: cannot orient " ++ 
                   Ppconstr.pr_constr_expr (Constrextern.extern_constr true env ev c1') ++
                   str ", " ++ 
@@ -534,10 +529,13 @@ let proofterm_of_cp c c1 c2 hinfo1 hinfo2 rule weights mode basename rews =
     let id = Namegen.next_ident_away_from (Id.of_string (basename ^ "_lemma")) (fun x -> Nametab.exists_cci (Libnames.make_path (Safe_typing.current_dirpath senv) x)) in
     let _ , prfc = 
       (match Obligations.add_definition id ~term:p s euc [||] with
-      | Defined ref -> Evarutil.new_global ev ref
-      | _ -> Errors.error "error")
+      | Defined ref ->
+         (* Evarutil.new_global *)
+         Evd.fresh_global (Global.env()) ev ref
+      | _ -> CErrors.error "error")
     in
-    msg (Ppconstr.pr_constr_expr (Constrextern.extern_constr true env ev prfc) ++  str " : " ++ Ppconstr.pr_constr_expr (Constrextern.extern_constr true env ev s) ++ str "\n");
+    (* msg *) msg_with !Pp_control.std_ft
+    (Ppconstr.pr_constr_expr (Constrextern.extern_constr true env ev prfc) ++  str " : " ++ Ppconstr.pr_constr_expr (Constrextern.extern_constr true env ev s) ++ str "\n");
     Some prfc)
   in
   f rews ((p1,c1',euc1),(p2,c2',euc2),ev1))
@@ -558,51 +556,50 @@ let critical_pairs env evd rews newrules =
   let l = List.fold_left f [] newrules in
   List.sort (fun (_,c1,_,_,_,_,_)(_,c2,_,_,_,_,_) -> size c1 - size c2) l
 
-let remove env evd weights mode rews rews' =
+let remove env evd ord scompl rews rews' =
   let rec aux result  = function
     | [] -> result
     | c'::rews ->
         let h = find_applied_relation false Loc.ghost env evd c' true in
         let rules = List.rev_append result (List.rev_append rews rews') in
-        let h' = reduce_fun h.hyp_cl.env h.hyp_cl.evd mode weights (mkApp (h.hyp_rel, [|h.hyp_left; h.hyp_right|])) rules in
+        let h' = reduce_fun h.hyp_cl.env h.hyp_cl.evd scompl ord (mkApp (h.hyp_rel, [|h.hyp_left; h.hyp_right|])) rules in
         let reducible =
           match kind h' with
           | App (_, args) -> equal args.(1) args.(2)
           | _ -> false
         in
         if reducible then
-            msg (Ppconstr.pr_constr_expr (Constrextern.extern_constr true env evd c') ++ str " is removed\n");
+            (* msg *) msg_with !Pp_control.std_ft
+                   (Ppconstr.pr_constr_expr (Constrextern.extern_constr true env evd c') ++ str " is removed\n");
         if reducible then aux result rews else aux (c' :: result) rews
   in
   aux [] rews
 
-let completion_core weights mode basename rews newrules comms =
+let completion_core ord scompl basename rews newrules comms =
   let env = Global.env () in
   let evd = Evd.from_env env in
-  let ord = lex_pathord weights in
-  msg (str (string_of_int (List.length rews) ^ " rews\n"));
-  let rews = remove env evd weights mode rews (List.rev_append comms newrules) in
-  msg (str (string_of_int (List.length newrules) ^ " newrules\n"));
-  let newrules = remove env evd weights mode newrules (List.rev_append comms rews) in
-  msg (str "newrules:\n");
-  List.iter (fun x -> msg (Ppconstr.pr_constr_expr (Constrextern.extern_constr true env evd x) ++ str "\n")) newrules;
+  let rews = remove env evd ord scompl rews (List.rev_append comms newrules) in
+  let newrules = remove env evd ord scompl newrules (List.rev_append comms rews) in
+  (* msg *) msg_with !Pp_control.std_ft (str "newrules:\n");
+  List.iter (fun x -> (* msg *)
+             msg_with !Pp_control.std_ft
+             (Ppconstr.pr_constr_expr (Constrextern.extern_constr true env evd x) ++ str "\n")) newrules;
   let cps = critical_pairs env evd (List.rev_append comms rews) newrules in
-  msg (str (string_of_int (List.length cps) ^ "\n"));
   let whole_rews = List.rev_append comms (List.rev_append newrules rews) in
   let aux newrs (ev, c, c1, c2, hinfo1, hinfo2, rule) =
-    match proofterm_of_cp c c1 c2 hinfo1 hinfo2 rule weights mode basename (List.rev_append newrs whole_rews) with
+    match proofterm_of_cp c c1 c2 hinfo1 hinfo2 rule ord scompl basename (List.rev_append newrs whole_rews) with
     | Some prfc -> prfc::newrs
     | None -> newrs
   in
   List.fold_left aux [] cps, whole_rews
 
-let rec completion_aux weights mode basename rews newrules comms =
-  let newrules, rews = completion_core weights mode basename rews newrules comms in
+let rec completion_aux ord scompl basename rews newrules comms =
+  let newrules, rews = completion_core ord scompl basename rews newrules comms in
   match newrules with
   | [] -> let env = Global.env () in
           let evd = Evd.from_env env in
           add_rewrite_hint env evd [basename] true None rews Loc.ghost
-  | _ -> completion_aux weights mode basename rews newrules comms
+  | _ -> completion_aux ord scompl basename rews newrules comms
 
 let classes_dirpath =
   Names.DirPath.make (List.map Id.of_string ["Classes";"Coq"])
@@ -611,7 +608,7 @@ let init_setoid () =
   if Libnames.is_dirpath_prefix_of classes_dirpath (Lib.cwd ()) then ()
   else Coqlib.check_required_library ["Coq";"Setoids";"Setoid"]
 
-let completion cs mode base weights acs =
+let completion cs scompl base weights acs =
   init_setoid ();
   let env = Global.env () in
   let evd = Evd.from_env env in
@@ -623,44 +620,51 @@ let completion cs mode base weights acs =
   let acs = List.rev_map (fun ((f, assoc), comm) ->
     let f, assoc, comm = interp f, interp assoc, interp comm in
     let h = find_applied_relation false Loc.ghost env evd assoc true in
-    let evd, ev1 = Evarutil.new_pure_evar (Environ.named_context_val h.hyp_cl.env) h.hyp_cl.evd h.hyp_car in
-    let evd, ev2 = Evarutil.new_pure_evar (Environ.named_context_val h.hyp_cl.env) evd h.hyp_car in
-    let evd, ev3 = Evarutil.new_pure_evar (Environ.named_context_val h.hyp_cl.env) evd h.hyp_car in
+    (* let evd, ev1 = Evarutil.new_pure_evar (Environ.named_context_val h.hyp_cl.env) h.hyp_cl.evd h.hyp_car in *)
+    let Sigma.Sigma(ev1,evd,_) = Evarutil.new_pure_evar (Environ.named_context_val h.hyp_cl.env) (Sigma.Unsafe.of_evar_map h.hyp_cl.evd) h.hyp_car in
+    (* let evd, ev2 = Evarutil.new_pure_evar (Environ.named_context_val h.hyp_cl.env) evd h.hyp_car in *)
+    let Sigma.Sigma(ev2,evd,_) = Evarutil.new_pure_evar (Environ.named_context_val h.hyp_cl.env) evd h.hyp_car in
+    (* let evd, ev3 = Evarutil.new_pure_evar (Environ.named_context_val h.hyp_cl.env) evd h.hyp_car in *)
+    let Sigma.Sigma(ev3,evd,_) = Evarutil.new_pure_evar (Environ.named_context_val h.hyp_cl.env) evd h.hyp_car in
     let assocl = mkApp (f, [| mkApp (f, [| mkEvar (ev1, [||]); mkEvar (ev2, [||]) |]); mkEvar (ev3, [||]) |]) in
     let assocr = mkApp (f, [| mkEvar (ev1,[||]); mkApp (f, [| mkEvar (ev2,[||]); mkEvar (ev3,[||]) |]) |]) in
     let ev, l2r =
-      try Unification.w_unify h.hyp_cl.env evd Reduction.CONV ~flags:(compl_unify_flags_with_freeze assocl ()) assocl h.hyp_left, true
+      try Unification.w_unify h.hyp_cl.env (Sigma.to_evar_map evd) Reduction.CONV ~flags:(compl_unify_flags_with_freeze assocl ()) assocl h.hyp_left, true
       with PretypeError (_,_,CannotUnify _) ->
-        try Unification.w_unify h.hyp_cl.env evd Reduction.CONV ~flags:(compl_unify_flags_with_freeze assocr ()) assocr h.hyp_left, false
+        try Unification.w_unify h.hyp_cl.env (Sigma.to_evar_map evd) Reduction.CONV ~flags:(compl_unify_flags_with_freeze assocr ()) assocr h.hyp_left, false
         with PretypeError (_,_,CannotUnify _) ->
-          Errors.error "invalid associative law"
+          CErrors.error "invalid associative law"
     in
     let _ = if l2r then
       if equal assocr (Evarutil.nf_evar ev h.hyp_right) then ()
-        else Errors.error "invalid associative law"
+        else CErrors.error "invalid associative law"
       else if equal assocl (Evarutil.nf_evar ev h.hyp_right) then ()
-        else Errors.error "invalid associative law"
+        else CErrors.error "invalid associative law"
     in
     let assoc = if l2r then assoc else
       (let senv = Global.safe_env() in
       let id = Namegen.next_ident_away_from (Id.of_string (base ^ "_assoc")) (fun x -> Nametab.exists_cci (Libnames.make_path (Safe_typing.current_dirpath senv) x)) in
       let s,_ = make_eq_statement h.hyp_cl.env h.hyp_cl.evd h.hyp_rel h.hyp_right h.hyp_left in
-      msg (Ppconstr.pr_constr_expr(Constrextern.extern_constr true env evd s) ++ str "\n");
+      (* msg *) msg_with !Pp_control.std_ft (Ppconstr.pr_constr_expr(Constrextern.extern_constr true env (Sigma.to_evar_map evd) s) ++ str "\n");
       match Obligations.add_definition id s euc ~tactic:(Tactics.intros <*> congruence_using [assoc]) [||] with
-      | Defined ref -> snd (Evarutil.new_global evd ref)
-      | _ -> Errors.error "failed to add associativity")
+      | Defined ref ->
+         snd ( (* Evarutil.new_global evd ref *)
+              Evd.fresh_global (Global.env()) (Sigma.to_evar_map evd) ref)
+      | _ -> CErrors.error "failed to add associativity")
     in
-    let h = find_applied_relation false Loc.ghost env evd comm true in
-    let evd, ev1 = Evarutil.new_pure_evar (Environ.named_context_val h.hyp_cl.env) h.hyp_cl.evd h.hyp_car in
-    let evd, ev2 = Evarutil.new_pure_evar (Environ.named_context_val h.hyp_cl.env) evd h.hyp_car in
+    let h = find_applied_relation false Loc.ghost env (Sigma.to_evar_map evd) comm true in
+    (* let evd, ev1 = Evarutil.new_pure_evar (Environ.named_context_val h.hyp_cl.env) h.hyp_cl.evd h.hyp_car in *)
+    let Sigma.Sigma(ev1,evd,_) = Evarutil.new_pure_evar (Environ.named_context_val h.hyp_cl.env) (Sigma.Unsafe.of_evar_map h.hyp_cl.evd) h.hyp_car in
+    (* let evd, ev2 = Evarutil.new_pure_evar (Environ.named_context_val h.hyp_cl.env) evd h.hyp_car in *)
+    let Sigma.Sigma(ev2,evd,_) = Evarutil.new_pure_evar (Environ.named_context_val h.hyp_cl.env) evd h.hyp_car in
     let comml = mkApp (f, [| mkEvar (ev1,[||]); mkEvar (ev2,[||]) |]) in
     let commr = mkApp (f, [| mkEvar (ev2,[||]); mkEvar (ev1,[||]) |]) in
     let ev =
-      try Unification.w_unify h.hyp_cl.env evd Reduction.CONV ~flags:(compl_unify_flags_with_freeze comml ()) comml h.hyp_left
-      with PretypeError (_,_,CannotUnify _) -> Errors.error "invalid commutative law"
+      try Unification.w_unify h.hyp_cl.env (Sigma.to_evar_map evd) Reduction.CONV ~flags:(compl_unify_flags_with_freeze comml ()) comml h.hyp_left
+      with PretypeError (_,_,CannotUnify _) -> CErrors.error "invalid commutative law"
     in
     if not (equal commr (Evarutil.nf_evar ev h.hyp_right)) then
-      Errors.error "invalid commutative law";
+      CErrors.error "invalid commutative law";
     f, assoc, comm
     ) acs
   in
@@ -669,13 +673,13 @@ let completion cs mode base weights acs =
   let evd = Evd.from_env env in
   let comms = List.fold_left (fun res (f, assoc, comm) ->
     let tac =
-      Proofview.Goal.nf_enter begin fun gl ->
+      Proofview.Goal.nf_enter { enter = fun gl ->
         let commg = Tacmach.New.pf_apply (extern_constr_to_glob true) gl comm in
         Tactics.intros <*>
         Tacticals.New.tclREPEAT_MAIN (Equality.rewriteRL assoc) <*>
-        Proofview.V82.tactic (cl_rewrite_clause (Tacinterp.default_ist (), (commg, NoBindings)) true (OnlyOccurrences [2]) None) <*>
+        (* Proofview.V82.tactic *) (cl_rewrite_clause (Tacinterp.default_ist (), (commg, NoBindings)) true (OnlyOccurrences [2]) None) <*>
         Tactics.reflexivity
-      end
+      }
     in
     let h = find_applied_relation false Loc.ghost env evd assoc true in
     let car = h.hyp_car in
@@ -688,8 +692,10 @@ let completion cs mode base weights acs =
     let senv = Global.safe_env() in
     let id = Namegen.next_ident_away_from (Id.of_string (base ^ "_helper")) (fun x -> Nametab.exists_cci (Libnames.make_path (Safe_typing.current_dirpath senv) x)) in
     match Obligations.add_definition id stmt euc ~tactic:tac [||] with
-    | Defined ref -> comm :: snd (Evarutil.new_global evd ref) :: res
-    | _ -> Errors.error "error"
+    | Defined ref -> comm :: snd ( (* Evarutil.new_global *)
+                                  Evd.fresh_global (Global.env()) evd ref)
+                     :: res
+    | _ -> CErrors.error "error"
     ) [] acs
   in
 
@@ -700,10 +706,11 @@ let completion cs mode base weights acs =
         (let senv = Global.safe_env () in
         let id = Namegen.next_ident_away_from (Id.of_string (base ^ "_lemma")) (fun x -> Nametab.exists_cci (Libnames.make_path (Safe_typing.current_dirpath senv) x)) in
         let s,_ = make_eq_statement hinfo.hyp_cl.env hinfo.hyp_cl.evd hinfo.hyp_rel hinfo.hyp_right hinfo.hyp_left in
-        msg (Ppconstr.pr_constr_expr(Constrextern.extern_constr true env evd s) ++ str "\n");
+        (* msg *) msg_with !Pp_control.std_ft (Ppconstr.pr_constr_expr(Constrextern.extern_constr true env evd s) ++ str "\n");
         match Obligations.add_definition id s euc ~tactic:(Tactics.intros <*> congruence_using [c]) [||] with
-        | Defined ref -> snd (Evarutil.new_global evd ref)
-        | _ -> Errors.error "error")
+        | Defined ref -> snd ((* Evarutil.new_global *)
+                              Evd.fresh_global (Global.env()) evd ref)
+        | _ -> CErrors.error "error")
     | _ -> c) csl
   in
-  completion_aux weights mode base [] (List.rev_map (fun (_,assoc,_) -> assoc) acs @ rews) comms
+  completion_aux (lex_pathord weights) scompl base [] (List.rev_map (fun (_,assoc,_) -> assoc) acs @ rews) comms

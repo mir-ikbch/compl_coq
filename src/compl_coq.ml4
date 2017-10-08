@@ -1,12 +1,15 @@
 (*i camlp4deps: "grammar/grammar.cma" i*)
 
 open Genarg
+open Stdarg
 open Constrarg
 open Pp
-let wit_ident_list = Genarg.wit_list Constrarg.wit_ident
-(* let wit_reference = Constrarg.wit_ref *)
+open Pcoq.Constr
+open Pcoq.Tactic
 
-type int_or_var = int Misctypes.or_var
+(* let wit_ident_list = Genarg.wit_list Constrarg.wit_ident *)
+(* let wit_reference = Constrarg.wit_ref *)
+(* type int_or_var = int Misctypes.or_var *)
 
 let pr_ac _ _ _ x = str ""
 
@@ -28,20 +31,12 @@ DECLARE PLUGIN "compl_coq"
 VERNAC COMMAND EXTEND Showp CLASSIFIED AS QUERY
 
 | [ "Complete" ne_constr_list(l) ":" preident(db) "sigs" ne_constr_list(a) ] ->
-  [ Compl.completion l Compl.Normal db a [] ]
+  [ Compl.completion l false db a [] ]
 
 | [ "Complete" ne_constr_list(l) "," "AC" ne_ac_list(acs) ":" preident(db) "sigs" ne_constr_list(a) ] ->
-  [ Compl.completion l Compl.Sorting db a acs ]
-
-| [ "OComplete" ne_constr_list(l) ":" preident(db) "sigs" ne_constr_list(a) ] ->
-  [ Compl.completion l Compl.Ordered db a [] ]
+  [ Compl.completion l true db a acs ]
 END
 
 TACTIC EXTEND autorewrite_ac
 | [ "autorewrite_ac" preident(db) "sigs" ne_constr_list(l) ] -> [ Compl.autorewrite_ac db l ]
-END
-
-TACTIC EXTEND ordered_autorewrite
-| ["ordered_rewrite" constr(c) "sigs" ne_constr_list(l) ] -> [ Compl.ordered_rewrite Locus.AllOccurrences l c ]
-| ["ordered_autorewrite" preident(db) "sigs" ne_constr_list(l) ] -> [ Compl.ordered_autorewrite db l ]
 END
