@@ -402,11 +402,11 @@ let autorewrite_ac base l =
         (Tacticals.New.tclORELSE (srewrite rew.rew_lemma l) Tacticals.New.tclIDTAC))
       (Proofview.tclUNIT()) (find_rewrites base)))
 
-let raw_srewrites ord cs =
+let raw_srewrites cs l =
   Tacticals.New.tclREPEAT (
     (List.fold_left (fun tac rule ->
       Tacticals.New.tclTHEN tac
-        (Tacticals.New.tclORELSE (rewrite_with_sorting AllOccurrences ord rule) Tacticals.New.tclIDTAC))
+        (Tacticals.New.tclORELSE (rewrite_with_sorting AllOccurrences (lex_pathord l) rule) Tacticals.New.tclIDTAC))
       (Proofview.tclUNIT()) cs))
 
 let rewrites cs =
@@ -469,7 +469,7 @@ let proofterm_of_cp c c1 c2 hinfo1 hinfo2 rule weights mode basename rews =
 		match mode with
 		| Normal -> rewrites rews
 		| Ordered -> ordered_autorewrite_core weights rews
-		| Sorting -> raw_srewrites ord rews
+		| Sorting -> raw_srewrites rews weights
   in
   let (stmt1, ev1), (stmt2, ev2) = make_eq_statement env evd equiv c c1, make_eq_statement env evd equiv c c2 in
 

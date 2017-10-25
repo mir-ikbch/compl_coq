@@ -42,6 +42,7 @@ END
 
 TACTIC EXTEND autorewrite_ac
 | [ "rewrite_ac" constr(c) "sigs" ne_constr_list(l) ] -> [ Compl.srewrite c l ]
+| [ "rewrites_ac" ne_constr_list(cs) ", sigs" ne_constr_list(l) ] -> [ Compl.raw_srewrites cs l ]
 | [ "autorewrite_ac" preident(db) "sigs" ne_constr_list(l) ] -> [ Compl.autorewrite_ac db l ]
 END
 
