@@ -2,6 +2,7 @@
 
 # Build
 ```
+  for Coq v8.6: $ git checkout 8.6
   $ export COQBIN=your_path_to_coq_bin
   $ export COQLIB=your_path_to_coq_lib
   $ coq_makefile -f Make -o Makefile
