@@ -17,7 +17,7 @@
   Coq < Parameter A : Set.
   Coq < Parameter op : A -> A -> A.
   Coq < Axiom ax : forall a b c, op (op a b) (op b c) = b.
-  Coq < Complete ax : dbname sigs op.
+  Coq < Complete ax : dbname sig op.
   Coq < Print Rewrite HintDb dbname.
 
   Coq < Goal forall a b c, op (op (op a b) (op b c)) (op (op b c) c) = op b c.
@@ -34,12 +34,12 @@
   Coq < Axiom inv : forall x, mul (i x) x = e.
   Coq < Axiom iden : forall x, mul e x = x.
   Coq < Axiom comm : forall x y, mul x y = mul y x.
-  Coq < Complete inv iden, AC (mul, assoc, comm) : dbname sigs e mul i.
+  Coq < Complete inv iden, AC (mul, assoc, comm) : dbname sig e mul i.
   Coq < Print Rewrite HintDb dbname2.
 
   Coq < Goal forall a b c, mul (mul b c) (mul a (mul (i c) b)) = mul a (mul b b).
   Coq < intros.
-  Coq < autorewrite_ac dbname2 sigs e mul i.
+  Coq < autorewrite_ac dbname2 sig e mul i.
   Coq < reflexivity.
   Coq < Qed.
 ```

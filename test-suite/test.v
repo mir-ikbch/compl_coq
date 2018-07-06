@@ -5,7 +5,7 @@ Variable A : Set.
 Variable op : A -> A -> A.
 Axiom ax : forall a b c, op (op a b) (op b c) = b.
 
-Complete ax : cgroupoid sigs op.
+Complete ax : cgroupoid sig op.
 
 Goal forall a b c, op (op (op a b) (op b c)) (op (op b c) c) = op b c.
 intros.
@@ -22,10 +22,10 @@ Axiom inv : forall a, mul (i a) a = e.
 Axiom iden : forall a, mul e a = a.
 Axiom comm : forall a b, mul a b = mul b a.
 
-Complete inv iden, AC (mul, assoc, comm) : group sigs e mul i.
+Complete inv iden, AC (mul, assoc, comm) : group sig e mul i.
 
 Goal forall a b c, mul (mul b c) (mul a (mul (i c) b)) = mul a (mul b b).
 intros.
-autorewrite_ac group sigs e mul i.
+autorewrite_ac group sig e mul i.
 reflexivity.
 Qed.

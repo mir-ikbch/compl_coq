@@ -30,23 +30,23 @@ END
 DECLARE PLUGIN "compl_coq"
 VERNAC COMMAND EXTEND Showp CLASSIFIED AS QUERY
 
-| [ "Complete" ne_constr_list(l) ":" preident(db) "sigs" ne_constr_list(a) ] ->
+| [ "Complete" ne_constr_list(l) ":" preident(db) "sig" ne_constr_list(a) ] ->
   [ Compl.completion l Compl.Normal db a [] ]
 
-| [ "Complete" ne_constr_list(l) "," "AC" ne_ac_list(acs) ":" preident(db) "sigs" ne_constr_list(a) ] ->
+| [ "Complete" ne_constr_list(l) "," "AC" ne_ac_list(acs) ":" preident(db) "sig" ne_constr_list(a) ] ->
   [ Compl.completion l Compl.Sorting db a acs ]
 
-| [ "OComplete" ne_constr_list(l) ":" preident(db) "sigs" ne_constr_list(a) ] ->
+| [ "OComplete" ne_constr_list(l) ":" preident(db) "sig" ne_constr_list(a) ] ->
   [ Compl.completion l Compl.Ordered db a [] ]
 END
 
 TACTIC EXTEND autorewrite_ac
-| [ "rewrite_ac" constr(c) "sigs" ne_constr_list(l) ] -> [ Compl.srewrite c l ]
-| [ "rewrites_ac" ne_constr_list(cs) ", sigs" ne_constr_list(l) ] -> [ Compl.raw_srewrites cs l ]
-| [ "autorewrite_ac" preident(db) "sigs" ne_constr_list(l) ] -> [ Compl.autorewrite_ac db l ]
+| [ "rewrite_ac" constr(c) "sig" ne_constr_list(l) ] -> [ Compl.srewrite c l ]
+| [ "rewrites_ac" ne_constr_list(cs) ", sig" ne_constr_list(l) ] -> [ Compl.raw_srewrites cs l ]
+| [ "autorewrite_ac" preident(db) "sig" ne_constr_list(l) ] -> [ Compl.autorewrite_ac db l ]
 END
 
 TACTIC EXTEND ordered_autorewrite
-| ["ordered_rewrite" constr(c) "sigs" ne_constr_list(l) ] -> [ Compl.ordered_rewrite Locus.AllOccurrences l c ]
-| ["ordered_autorewrite" preident(db) "sigs" ne_constr_list(l) ] -> [ Compl.ordered_autorewrite db l ]
+| ["ordered_rewrite" constr(c) "sig" ne_constr_list(l) ] -> [ Compl.ordered_rewrite Locus.AllOccurrences l c ]
+| ["ordered_autorewrite" preident(db) "sig" ne_constr_list(l) ] -> [ Compl.ordered_autorewrite db l ]
 END

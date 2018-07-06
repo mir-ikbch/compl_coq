@@ -366,9 +366,18 @@ let ordered_autorewrite_core weights cs =
         (Tacticals.New.tclORELSE (ordered_rewrite AllOccurrences weights rule) Tacticals.New.tclIDTAC))
       (Proofview.tclUNIT()) cs))
 
+
+let ordered_autorewrite cs weights =
+  Tacticals.New.tclREPEAT (
+    (List.fold_left (fun tac rew ->
+      Tacticals.New.tclTHEN tac
+        (Tacticals.New.tclORELSE (ordered_rewrite AllOccurrences weights rew.rew_lemma) Tacticals.New.tclIDTAC))
+      (Proofview.tclUNIT()) (find_rewrites cs)))
+(*
 let ordered_autorewrite base weights =
   let rules = List.rev_map (fun x -> x.rew_lemma) (find_rewrites base) in
   ordered_autorewrite_core rules weights
+  *)
 
 let rewrite_with_sorting occs ord c =
   Proofview.Goal.nf_enter { enter = fun gl ->
@@ -510,6 +519,8 @@ let proofterm_of_cp c c1 c2 hinfo1 hinfo2 rule weights mode basename rews =
   in
   let c1',p1',euc1 = normalize ev1 c1 euc1 in
   let c2',p2',euc2 = normalize' ev2 c2 c1' euc2 in
+    msg_with !Pp_control.std_ft
+      (Ppconstr.pr_constr_expr (Constrextern.extern_constr true env ev1 c1') ++ Ppconstr.pr_constr_expr (Constrextern.extern_constr true env ev2 c2') ++ str "\n");
 
   let stmt,_ = make_eq_statement env evd equiv c2 c2' in
   let stmt' = Retyping.get_type_of env ev2 p2' in
@@ -567,7 +578,7 @@ let proofterm_of_cp c c1 c2 hinfo1 hinfo2 rule weights mode basename rews =
       | _ -> CErrors.error "error")
     in
     (* msg *) msg_with !Pp_control.std_ft
-    (Ppconstr.pr_constr_expr (Constrextern.extern_constr true env ev prfc) ++  str " : " ++ Ppconstr.pr_constr_expr (Constrextern.extern_constr true env ev s) ++ str "\n");
+    (Ppconstr.pr_constr_expr (Constrextern.extern_constr true env ev prfc) ++  str "  " ++ Ppconstr.pr_constr_expr (Constrextern.extern_constr true env ev s) ++ str "\n");
     Some prfc)
   in
   f rews ((p1,c1',euc1),(p2,c2',euc2),ev1))
