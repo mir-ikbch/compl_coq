@@ -326,7 +326,7 @@ Parameter A : Set.
 Parameter op : A -&gt; A -&gt; A.
 Axiom ax : forall a b c, op (op a b) (op b c) = b.
 
-Complete ax : dbname sigs op.
+Complete ax : dbname sig op.
 Print Rewrite HintDb dbname.
 
 Goal forall a b c, op (op (op a b) (op b c)) (op (op b c) c) = op b c.
@@ -344,9 +344,9 @@ Axiom inv : forall x, mul (i x) x = e.
 Axiom iden : forall x, mul e x = x.
 Axiom comm : forall x y, mul x y = mul y x.
 
-Complete inv iden, AC (mul, assoc, comm) : dbname sigs e mul i.
+Complete inv iden, AC (mul, assoc, comm) : dbname sig e mul i.
 Print Rewrite HintDb dbname2.
-Ltac autorewrite_gr := autorewrite_ac dbname2 sigs e mul i.
+Ltac autorewrite_gr := autorewrite_ac dbname2 sig e mul i.
 
 Goal forall a b c, mul (mul b c) (mul a (mul (i c) b)) = mul a (mul b b).
   intros.
